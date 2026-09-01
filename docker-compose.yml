@@ -1,0 +1,190 @@
+# =====================================================================
+# docker-compose.yml — infrastruttura di supporto per lo sviluppo locale
+#
+# I 7 microservizi Python/FastAPI NON girano qui dentro: in sviluppo si
+# lanciano in locale con `uvicorn` (vedi README di ciascun servizio) e si
+# collegano a questa infrastruttura via localhost. Questo compose alza
+# SOLO Postgres, MongoDB, Kafka (KRaft), Kafka UI e MinIO.
+#
+# Avvio:   docker compose up -d
+# Stato:   docker compose ps
+# Log:     docker compose logs -f kafka
+# Stop:    docker compose down            (aggiungi -v per azzerare i volumi)
+# =====================================================================
+
+networks:
+  tornei-net:
+    driver: bridge
+
+volumes:
+  pgdata:
+  mongodata:
+  kafkadata:
+  miniodata:
+
+services:
+
+  # ---------------------------------------------------------------------
+  # PostgreSQL — istanza unica condivisa da 6 dei 7 microservizi
+  # (identity, tournament, team-roster, registration, documents, scoring).
+  # Al primo avvio esegue ./deploy/local/init-postgres.sql per creare i
+  # 6 database applicativi separati (uno per servizio).
+  # Porta host: 5432
+  # ---------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: tornei-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/local/init-postgres.sql:/docker-entrypoint-initdb.d/init-postgres.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tornei-net
+
+  # ---------------------------------------------------------------------
+  # MongoDB — database documentale dedicato al servizio sport-rules
+  # (catalogo sport + ruleset). Database applicativo: sport_rules_db
+  # (creato on-demand dal driver del servizio al primo scritture, come
+  # da comportamento standard di MongoDB).
+  # Porta host: 27017
+  # ---------------------------------------------------------------------
+  mongo:
+    image: mongo:7
+    container_name: tornei-mongo
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodata:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tornei-net
+
+  # ---------------------------------------------------------------------
+  # Kafka — broker eventi tra i microservizi (vedi contracts/asyncapi.yaml),
+  # in modalita' KRaft: nessuno Zookeeper, il broker fa anche da controller
+  # (nodo singolo, adatto a sviluppo locale).
+  #
+  # Scelta immagine: bitnami/kafka. E' l'immagine community piu' matura per
+  # KRaft "single-node" in Docker, con supporto KRaft nativo dalla 3.x senza
+  # bisogno di generare a mano lo storage UUID, e usa le variabili
+  # KAFKA_CFG_* che mappano 1:1 su server.properties — comode per il setup
+  # a doppio listener richiesto qui sotto.
+  #
+  # Doppio listener (fondamentale: i servizi FastAPI girano in locale fuori
+  # da Docker, Kafka UI gira invece dentro la rete Docker):
+  #   - listener "EXTERNAL" (porta 9092, pubblicata sull'host) -> annunciato
+  #     come localhost:9092, e' quello usato dai servizi in locale
+  #     (KAFKA_BOOTSTRAP_SERVERS=localhost:9092 nei .env.example)
+  #   - listener "PLAINTEXT" (porta 29092, solo rete Docker interna) ->
+  #     annunciato come kafka:29092, usato da Kafka UI (container-to-container)
+  #   - listener "CONTROLLER" (porta 9093) -> solo per il quorum KRaft interno
+  #
+  # Porta host: 9092
+  # ---------------------------------------------------------------------
+  kafka:
+    image: bitnami/kafka:3.7
+    container_name: tornei-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      # --- KRaft: ruoli e quorum (nessuno Zookeeper) ---
+      KAFKA_CFG_NODE_ID: "1"
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_KRAFT_CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      # --- Doppio listener: host (EXTERNAL) + rete Docker (PLAINTEXT) ---
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # Nessun TLS/SASL in locale: consenti esplicitamente i listener in chiaro.
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+    volumes:
+      - kafkadata:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    networks:
+      - tornei-net
+
+  # ---------------------------------------------------------------------
+  # Kafka UI — console web per ispezionare topic/messaggi durante lo
+  # sviluppo. Gira dentro la rete Docker: si collega a Kafka tramite il
+  # listener INTERNO kafka:29092 (non localhost:9092, che e' solo per
+  # chi e' fuori dalla rete Docker).
+  # Porta host: 8080 -> http://localhost:8080
+  # ---------------------------------------------------------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: tornei-kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: tornei-local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      - tornei-net
+
+  # ---------------------------------------------------------------------
+  # MinIO — object storage S3-compatibile per il servizio documents
+  # (file dei documenti caricati; i metadati restano su Postgres).
+  # Porta host: 9000 (API S3) e 9001 (console web -> http://localhost:9001)
+  # ---------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: tornei-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - tornei-net
+
+# =====================================================================
+# Mappa porte (host) e credenziali di default — SOLO sviluppo locale.
+#
+#   Postgres   -> localhost:5432       (POSTGRES_USER=postgres / POSTGRES_PASSWORD=postgres)
+#                 database: identity_db, tournament_db, team_roster_db,
+#                           registration_db, documents_db, scoring_db
+#   MongoDB    -> localhost:27017      (nessuna auth in locale)
+#   Kafka      -> localhost:9092       (listener EXTERNAL, per i servizi in locale)
+#                 kafka:29092 e' il listener interno usato solo dentro la rete Docker
+#   Kafka UI   -> http://localhost:8080
+#   MinIO API  -> localhost:9000       (MINIO_ROOT_USER=minioadmin / MINIO_ROOT_PASSWORD=minioadmin)
+#   MinIO web  -> http://localhost:9001
+# =====================================================================
