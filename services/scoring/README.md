@@ -21,6 +21,8 @@ scoring/
 │   └── config.py
 ├── tests/
 ├── Dockerfile
+├── pyproject.toml
+├── uv.lock
 ├── requirements.txt
 ├── .env.example
 └── README.md

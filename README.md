@@ -45,7 +45,7 @@ tournaments-platform/
 │   ├── terraform/          #   IaC
 │   ├── k8s/                #   manifest Kubernetes (differiti)
 │   └── local/              #   init DB per sviluppo locale
-└── docker-compose.yml      # infra locale (Postgres + Mongo + Kafka) (in arrivo — Fase 0)
+└── docker-compose.yml      # infra locale (Postgres + Mongo + Kafka + Kafka UI + MinIO)
 ```
 
 ## I 7 microservizi
