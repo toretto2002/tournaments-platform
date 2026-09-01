@@ -10,7 +10,7 @@ dependencies = [
     "pydantic-settings==2.*",
     "motor==3.*",
     "pymongo==4.*",
-    "aiokafka==0.12.*",
+    "aiokafka==0.14.*",
     "httpx==0.28.*",
 ]
 
