@@ -360,6 +360,7 @@ Ref: registrations.team_id > teams.id             // REGISTRATION -> TEAM
 Ref: required_documents.tournament_id > tournaments.id // DOCUMENTS -> TOURNAMENT
 Ref: uploaded_documents.registration_id > registrations.id // DOCUMENTS -> REGISTRATION
 Ref: uploaded_documents.uploaded_by > users.id    // DOCUMENTS -> IDENTITY
+Ref: uploaded_documents.player_user_id > users.id // DOCUMENTS -> IDENTITY
 Ref: groups.tournament_id > tournaments.id        // SCORING -> TOURNAMENT
 Ref: group_teams.team_id > teams.id               // SCORING -> TEAM
 Ref: matches.tournament_id > tournaments.id       // SCORING -> TOURNAMENT

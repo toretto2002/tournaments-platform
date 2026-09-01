@@ -19,7 +19,7 @@ paths:
   /identity/users/{id}:
     get:
       tags: [Identity]
-      summary: Dati utente per validazione (frecce #1, #4, #5, #10, #11)
+      summary: Dati utente per validazione (frecce 1, 4, 5, 10, 11)
       parameters:
         - name: id
           in: path
