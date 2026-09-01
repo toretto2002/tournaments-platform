@@ -1,0 +1,331 @@
+asyncapi: 3.0.0
+info:
+  title: Tornei Sportivi — Event Contracts
+  version: 1.0.0
+  description: |
+    Contratti degli eventi asincroni (Kafka) tra i microservizi della
+    piattaforma di gestione tornei. Ogni messaggio usa l'envelope standard
+    (eventId, eventType, version, occurredAt, correlationId, producer, payload).
+    Sorgente di verità dati: schema_er_tornei_v1.dbml
+
+defaultContentType: application/json
+
+servers:
+  kafka:
+    host: kafka:9092
+    protocol: kafka
+    description: Cluster Kafka (ambiente v1)
+
+channels:
+  identity.users:
+    address: identity.users
+    description: Ciclo di vita degli utenti.
+    messages:
+      userCreated:
+        $ref: '#/components/messages/UserCreated'
+
+  tournament.lifecycle:
+    address: tournament.lifecycle
+    description: Ciclo di vita dei tornei.
+    messages:
+      tournamentCreated:
+        $ref: '#/components/messages/TournamentCreated'
+      tournamentPublished:
+        $ref: '#/components/messages/TournamentPublished'
+      registrationClosed:
+        $ref: '#/components/messages/TournamentRegistrationClosed'
+
+  team.roster:
+    address: team.roster
+    description: Ciclo di vita di squadre e roster.
+    messages:
+      teamCreated:
+        $ref: '#/components/messages/TeamCreated'
+      teamNameChanged:
+        $ref: '#/components/messages/TeamNameChanged'
+
+  registration.lifecycle:
+    address: registration.lifecycle
+    description: Ciclo di vita delle iscrizioni.
+    messages:
+      registrationSubmitted:
+        $ref: '#/components/messages/RegistrationSubmitted'
+      registrationAccepted:
+        $ref: '#/components/messages/RegistrationAccepted'
+      registrationRejected:
+        $ref: '#/components/messages/RegistrationRejected'
+
+  scoring.results:
+    address: scoring.results
+    description: Risultati partite e loro effetti.
+    messages:
+      matchResultRecorded:
+        $ref: '#/components/messages/MatchResultRecorded'
+
+operations:
+  onTournamentCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/tournament.lifecycle'
+    summary: Sport & Rules associa un ruleset al nuovo torneo.
+    messages:
+      - $ref: '#/channels/tournament.lifecycle/messages/tournamentCreated'
+
+  onRegistrationClosed:
+    action: receive
+    channel:
+      $ref: '#/channels/tournament.lifecycle'
+    summary: Scoring genera gironi/tabellone (US-10).
+    messages:
+      - $ref: '#/channels/tournament.lifecycle/messages/registrationClosed'
+
+  onRegistrationAccepted:
+    action: receive
+    channel:
+      $ref: '#/channels/registration.lifecycle'
+    summary: Scoring registra la squadra come partecipante.
+    messages:
+      - $ref: '#/channels/registration.lifecycle/messages/registrationAccepted'
+
+  onTeamCreated:
+    action: receive
+    channel:
+      $ref: '#/channels/team.roster'
+    summary: Scoring inizializza la proiezione locale del nome squadra.
+    messages:
+      - $ref: '#/channels/team.roster/messages/teamCreated'
+
+components:
+  messages:
+    UserCreated:
+      name: UserCreated
+      title: Utente creato
+      payload:
+        $ref: '#/components/schemas/EnvelopeUserCreated'
+    TournamentCreated:
+      name: TournamentCreated
+      title: Torneo creato
+      payload:
+        $ref: '#/components/schemas/EnvelopeTournamentCreated'
+    TournamentPublished:
+      name: TournamentPublished
+      title: Torneo pubblicato
+      payload:
+        $ref: '#/components/schemas/EnvelopeTournamentPublished'
+    TournamentRegistrationClosed:
+      name: TournamentRegistrationClosed
+      title: Iscrizioni chiuse
+      payload:
+        $ref: '#/components/schemas/EnvelopeRegistrationClosed'
+    TeamCreated:
+      name: TeamCreated
+      title: Squadra creata
+      payload:
+        $ref: '#/components/schemas/EnvelopeTeamCreated'
+    TeamNameChanged:
+      name: TeamNameChanged
+      title: Nome squadra modificato
+      payload:
+        $ref: '#/components/schemas/EnvelopeTeamNameChanged'
+    RegistrationSubmitted:
+      name: RegistrationSubmitted
+      title: Iscrizione inviata
+      payload:
+        $ref: '#/components/schemas/EnvelopeRegistrationSubmitted'
+    RegistrationAccepted:
+      name: RegistrationAccepted
+      title: Iscrizione accettata
+      payload:
+        $ref: '#/components/schemas/EnvelopeRegistrationAccepted'
+    RegistrationRejected:
+      name: RegistrationRejected
+      title: Iscrizione rifiutata
+      payload:
+        $ref: '#/components/schemas/EnvelopeRegistrationRejected'
+    MatchResultRecorded:
+      name: MatchResultRecorded
+      title: Risultato partita registrato
+      payload:
+        $ref: '#/components/schemas/EnvelopeMatchResultRecorded'
+
+  schemas:
+    # ---- Envelope standard (production-grade) ----
+    EventEnvelope:
+      type: object
+      required: [eventId, eventType, version, occurredAt, correlationId, producer, payload]
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Identificativo univoco dell'evento (idempotenza consumer).
+        eventType:
+          type: string
+          description: Tipo evento, es. "registration.accepted".
+        version:
+          type: string
+          description: Versione dello schema payload, es. "1.0".
+        occurredAt:
+          type: string
+          format: date-time
+        correlationId:
+          type: string
+          format: uuid
+          description: Traccia il flusso end-to-end tra servizi.
+        producer:
+          type: string
+          description: Servizio emittente.
+        payload:
+          type: object
+
+    # ---- Payload specifici ----
+    UserCreatedPayload:
+      type: object
+      required: [userId, email, displayName]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string, format: email }
+        displayName: { type: string }
+
+    TournamentCreatedPayload:
+      type: object
+      required: [tournamentId, organizerId, sportId, name, format]
+      properties:
+        tournamentId: { type: string, format: uuid }
+        organizerId: { type: string, format: uuid }
+        sportId: { type: string, format: uuid }
+        name: { type: string }
+        format:
+          type: string
+          enum: [ROUND_ROBIN, SINGLE_ELIM, GROUPS_PLUS_ELIM]
+
+    TournamentPublishedPayload:
+      type: object
+      required: [tournamentId, publishedAt]
+      properties:
+        tournamentId: { type: string, format: uuid }
+        publishedAt: { type: string, format: date-time }
+
+    RegistrationClosedPayload:
+      type: object
+      required: [tournamentId, closedAt]
+      properties:
+        tournamentId: { type: string, format: uuid }
+        closedAt: { type: string, format: date-time }
+
+    TeamCreatedPayload:
+      type: object
+      required: [teamId, name, createdBy]
+      properties:
+        teamId: { type: string, format: uuid }
+        name: { type: string }
+        createdBy: { type: string, format: uuid }
+
+    TeamNameChangedPayload:
+      type: object
+      required: [teamId, name]
+      properties:
+        teamId: { type: string, format: uuid }
+        name: { type: string }
+
+    RegistrationSubmittedPayload:
+      type: object
+      required: [registrationId, tournamentId, teamId, submittedAt]
+      properties:
+        registrationId: { type: string, format: uuid }
+        tournamentId: { type: string, format: uuid }
+        teamId: { type: string, format: uuid }
+        submittedAt: { type: string, format: date-time }
+
+    RegistrationAcceptedPayload:
+      type: object
+      required: [registrationId, tournamentId, teamId, acceptedAt]
+      properties:
+        registrationId: { type: string, format: uuid }
+        tournamentId: { type: string, format: uuid }
+        teamId: { type: string, format: uuid }
+        acceptedAt: { type: string, format: date-time }
+
+    RegistrationRejectedPayload:
+      type: object
+      required: [registrationId, tournamentId, teamId, reason]
+      properties:
+        registrationId: { type: string, format: uuid }
+        tournamentId: { type: string, format: uuid }
+        teamId: { type: string, format: uuid }
+        reason: { type: string }
+
+    MatchResultRecordedPayload:
+      type: object
+      required: [matchId, tournamentId, homeScore, awayScore, stage]
+      properties:
+        matchId: { type: string, format: uuid }
+        tournamentId: { type: string, format: uuid }
+        homeTeamId: { type: string, format: uuid }
+        awayTeamId: { type: string, format: uuid }
+        homeScore: { type: integer }
+        awayScore: { type: integer }
+        stage:
+          type: string
+          enum: [GROUP, KNOCKOUT]
+
+    # ---- Envelope tipizzati (envelope + payload specifico) ----
+    EnvelopeUserCreated:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/UserCreatedPayload' }
+    EnvelopeTournamentCreated:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/TournamentCreatedPayload' }
+    EnvelopeTournamentPublished:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/TournamentPublishedPayload' }
+    EnvelopeRegistrationClosed:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/RegistrationClosedPayload' }
+    EnvelopeTeamCreated:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/TeamCreatedPayload' }
+    EnvelopeTeamNameChanged:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/TeamNameChangedPayload' }
+    EnvelopeRegistrationSubmitted:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/RegistrationSubmittedPayload' }
+    EnvelopeRegistrationAccepted:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/RegistrationAcceptedPayload' }
+    EnvelopeRegistrationRejected:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/RegistrationRejectedPayload' }
+    EnvelopeMatchResultRecorded:
+      allOf:
+        - $ref: '#/components/schemas/EventEnvelope'
+        - type: object
+          properties:
+            payload: { $ref: '#/components/schemas/MatchResultRecordedPayload' }

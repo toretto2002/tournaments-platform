@@ -1,0 +1,203 @@
+openapi: 3.1.0
+info:
+  title: Tornei Sportivi — Sync API Contracts (cross-context)
+  version: 1.0.0
+  description: |
+    Contratti delle API sincrone chiamate tra microservizi (percorso critico che
+    richiede risposta immediata: validazioni e letture di dati altrui).
+    NB: in produzione ogni servizio espone il proprio blocco su un base path distinto;
+    qui sono consolidati per leggibilità del contratto. Le API pubbliche di lettura
+    (US-12/13) non sono incluse: sono servite da Scoring/Tournament con proiezioni locali.
+
+tags:
+  - name: Identity
+  - name: Sport
+  - name: Tournament
+  - name: Team
+
+paths:
+  /identity/users/{id}:
+    get:
+      tags: [Identity]
+      summary: Dati utente per validazione (frecce #1, #4, #5, #10, #11)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Utente trovato
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserPublic' }
+        '404': { description: Utente inesistente }
+
+  /identity/users/_validate:
+    post:
+      tags: [Identity]
+      summary: Validazione batch di più utenti
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Mappa id→esistenza
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: boolean }
+
+  /sport/sports/{id}:
+    get:
+      tags: [Sport]
+      summary: Validazione sport dal catalogo (freccia #2)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Sport trovato
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Sport' }
+        '404': { description: Sport inesistente }
+
+  /sport/sports/{id}/ruleset:
+    get:
+      tags: [Sport]
+      summary: Ruleset per calcolo classifiche (usato da Scoring — vedi decisione aperta §7.1)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: tournamentId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Ruleset (criteri punteggio e spareggio)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Ruleset' }
+
+  /tournament/tournaments/{id}:
+    get:
+      tags: [Tournament]
+      summary: Stato torneo per iscrizione/documenti (frecce #6, #8)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Torneo trovato
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TournamentPublic' }
+        '404': { description: Torneo inesistente }
+
+  /team/teams/{id}:
+    get:
+      tags: [Team]
+      summary: Verifica squadra all'iscrizione (freccia #7)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Squadra trovata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Team' }
+        '404': { description: Squadra inesistente }
+
+  /team/teams/{id}/members:
+    get:
+      tags: [Team]
+      summary: Roster e capitano all'iscrizione (freccia #7)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Elenco membri
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/TeamMember' }
+
+components:
+  schemas:
+    UserPublic:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        email: { type: string, format: email }
+
+    Sport:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string, example: FOOTBALL }
+        displayName: { type: string }
+
+    Ruleset:
+      type: object
+      description: Documento JSON dei criteri (da MongoDB). Schema-less di proposito.
+      properties:
+        pointsWin: { type: integer, example: 3 }
+        pointsDraw: { type: integer, example: 1 }
+        pointsLoss: { type: integer, example: 0 }
+        tiebreakerOrder:
+          type: array
+          items: { type: string, example: HEAD_TO_HEAD }
+      additionalProperties: true
+
+    TournamentPublic:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status:
+          type: string
+          enum: [DRAFT, PUBLISHED, REGISTRATION_CLOSED, IN_PROGRESS, COMPLETED, CANCELLED]
+        format:
+          type: string
+          enum: [ROUND_ROBIN, SINGLE_ELIM, GROUPS_PLUS_ELIM]
+        maxTeams: { type: integer }
+
+    Team:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        createdBy: { type: string, format: uuid }
+
+    TeamMember:
+      type: object
+      properties:
+        userId: { type: string, format: uuid }
+        isCaptain: { type: boolean }
+        status:
+          type: string
+          enum: [INVITED, ACTIVE, REMOVED]

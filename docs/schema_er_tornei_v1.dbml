@@ -1,0 +1,409 @@
+// =====================================================================
+// Piattaforma Gestione Tornei Sportivi — Schema ER (bozza v1)
+// Formato: DBML (dbdiagram.io / dbml-cli)
+// =====================================================================
+//
+// NOTE DI LETTURA
+// - I TableGroup rappresentano i BOUNDED CONTEXT / futuri microservizi.
+//   Ogni gruppo -> un servizio con il proprio database.
+// - Le relazioni CROSS-CONTEXT (tra gruppi diversi) NON sono vere FK a
+//   runtime: in un'architettura a microservizi diventano riferimenti
+//   logici risolti via API o eventi (Kafka/RabbitMQ). Qui sono modellate
+//   come Ref solo per chiarezza del dominio: annotate con [note].
+// - Le relazioni INTRA-CONTEXT (dentro lo stesso gruppo) sono FK reali.
+// - La configurazione sport-specifica vive su MongoDB (Sport & Rules
+//   context): rappresentata come tabella "logica" con nota, NON e' una
+//   tabella relazionale.
+//
+// LEGENDA CONTESTI (microservizi):
+//   [IDENTITY]     -> Identity & Access
+//   [TOURNAMENT]   -> Tournament Management
+//   [TEAM]         -> Team & Roster
+//   [REGISTRATION] -> Registration
+//   [DOCUMENTS]    -> Documents (metadati relazionali; file su storage)
+//   [SCORING]      -> Scoring & Standings
+//   [SPORT]        -> Sport & Rules (documentale / MongoDB)
+// =====================================================================
+
+
+// =====================================================================
+// [IDENTITY] Identity & Access
+// =====================================================================
+
+Table users {
+  id            uuid       [pk]
+  email         varchar    [unique, not null]
+  password_hash varchar    [not null]
+  display_name  varchar    [not null]
+  created_at    timestamp  [not null, default: `now()`]
+  updated_at    timestamp
+
+  Note: 'Utente unico della piattaforma. I ruoli sono espressi in user_roles e/o contestualmente (capitano su team_members, organizzatore su tournaments).'
+}
+
+Table user_roles {
+  id       uuid [pk]
+  user_id  uuid [not null]
+  role     user_role_enum [not null]
+
+  Indexes {
+    (user_id, role) [unique]
+  }
+  Note: 'Ruoli GLOBALI assegnabili (es. PLAYER, ORGANIZER). Il ruolo CAPTAIN NON sta qui: e’ contestuale alla squadra (flag su team_members). I permessi effettivi sono valutati per contesto (proprietario del torneo / della squadra).'
+}
+
+Enum user_role_enum {
+  PLAYER
+  ORGANIZER
+  // CAPTAIN escluso di proposito: contestuale (vedi team_members.is_captain)
+  // ADMIN // riservato evoluzione futura
+}
+
+
+// =====================================================================
+// [TOURNAMENT] Tournament Management
+// =====================================================================
+
+Table tournaments {
+  id                uuid       [pk]
+  organizer_id      uuid       [not null, note: 'CROSS-CONTEXT -> users.id (Identity). Riferimento logico.']
+  sport_id          uuid       [not null, note: 'CROSS-CONTEXT -> sports.id (Sport & Rules). In v1 sempre = Calcio.']
+  name              varchar    [not null]
+  status            tournament_status_enum [not null, default: 'DRAFT']
+  format            tournament_format_enum [not null]
+  start_date        date
+  end_date          date
+  max_teams         int
+  participation_fee decimal    [note: 'Dato solo informativo in v1 (nessun pagamento integrato).']
+
+  // --- Location / geolocalizzazione (US ricerca tornei - Should) ---
+  location_name     varchar
+  city              varchar
+  region            varchar
+  latitude          decimal
+  longitude         decimal
+
+  created_at        timestamp  [not null, default: `now()`]
+  updated_at        timestamp
+
+  Note: 'Nasce in DRAFT, va PUBLISHED per essere visibile pubblicamente.'
+}
+
+Enum tournament_status_enum {
+  DRAFT
+  PUBLISHED
+  REGISTRATION_CLOSED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+Enum tournament_format_enum {
+  ROUND_ROBIN      // solo gironi
+  SINGLE_ELIM      // solo eliminazione diretta
+  GROUPS_PLUS_ELIM // misto: gironi + fase finale
+}
+
+// Config del formato misto: quante squadre per girone avanzano, ecc.
+Table tournament_format_config {
+  id                    uuid [pk]
+  tournament_id         uuid [not null]
+  num_groups            int  [note: 'Numero di gironi (per ROUND_ROBIN / GROUPS_PLUS_ELIM).']
+  teams_advancing_per_group int [note: 'Quante squadre di ogni girone accedono alla fase a eliminazione (formato misto).']
+  has_third_place_match boolean [default: false]
+
+  Note: 'Parametri strutturali del formato. Attributi realmente sport-specifici o molto variabili -> vedi sport_ruleset (MongoDB).'
+}
+
+
+// =====================================================================
+// [SPORT] Sport & Rules  ---  DOCUMENTALE / MongoDB
+// =====================================================================
+// ATTENZIONE: questo contesto NON e' relazionale. Le tabelle sotto sono
+// una rappresentazione LOGICA di collection MongoDB, messe qui solo per
+// mostrare i riferimenti. A runtime: documenti JSON, niente FK reali.
+// =====================================================================
+
+Table sports {
+  id           uuid    [pk, note: 'MongoDB _id (logico).']
+  code         varchar [unique, note: 'es. FOOTBALL. In v1 esiste solo Calcio.']
+  display_name varchar
+
+  Note: 'COLLECTION MongoDB. Catalogo sport disponibili.'
+}
+
+Table sport_ruleset {
+  id             uuid [pk, note: 'MongoDB _id (logico).']
+  sport_id       uuid [note: 'Riferimento logico -> sports.id']
+  tournament_id  uuid [note: 'Riferimento logico -> tournaments.id (ruleset applicato a un torneo). Opzionale: puo’ esistere un ruleset template riusabile.']
+  ruleset_json   json [note: 'Documento con: criteri punteggio (es. 3-1-0), ordine criteri di spareggio (scontro diretto, diff reti, ...), regole bye, eventuali attributi sport-specifici. Schema-less di proposito.']
+
+  Note: 'COLLECTION MongoDB. Config regole sport-specifica. JSON flessibile per supportare sport futuri senza migrazioni relazionali.'
+}
+
+
+// =====================================================================
+// [TEAM] Team & Roster
+// =====================================================================
+
+Table teams {
+  id          uuid      [pk]
+  name        varchar   [not null]
+  created_by  uuid      [not null, note: 'CROSS-CONTEXT -> users.id. Utente che ha creato la squadra (capitano iniziale).']
+  join_code   varchar   [unique, note: 'Codice/link per far unire giocatori (US-06).']
+  created_at  timestamp [not null, default: `now()`]
+
+  Note: 'Una squadra e’ riusabile su piu’ tornei.'
+}
+
+Table team_members {
+  id          uuid [pk]
+  team_id     uuid [not null]
+  user_id     uuid [not null, note: 'CROSS-CONTEXT -> users.id (il giocatore).']
+  is_captain  boolean [not null, default: false, note: 'Ruolo CAPITANO espresso qui: contestuale alla squadra. Un utente puo’ essere capitano in una squadra e semplice giocatore in un’altra.']
+  status      team_member_status_enum [not null, default: 'INVITED']
+  joined_at   timestamp
+
+  Indexes {
+    (team_id, user_id) [unique]
+  }
+  Note: 'Un giocatore puo’ appartenere a piu’ squadre. Relazione molti-a-molti user<->team con attributi.'
+}
+
+Enum team_member_status_enum {
+  INVITED
+  ACTIVE
+  REMOVED
+}
+
+
+// =====================================================================
+// [REGISTRATION] Registration
+// =====================================================================
+
+Table registrations {
+  id             uuid [pk]
+  tournament_id  uuid [not null, note: 'CROSS-CONTEXT -> tournaments.id']
+  team_id        uuid [not null, note: 'CROSS-CONTEXT -> teams.id']
+  status         registration_status_enum [not null, default: 'PENDING']
+  payment_status payment_status_enum [not null, default: 'UNPAID', note: 'Tracciamento MANUALE in v1: organizzatore marca come ricevuto.']
+  rejection_reason varchar [note: 'Motivo in caso di rifiuto (US-09).']
+  submitted_at   timestamp
+  decided_at     timestamp
+
+  Indexes {
+    (tournament_id, team_id) [unique]
+  }
+  Note: 'Passa ad ACCEPTED solo con documenti obbligatori validati + pagamento marcato ricevuto.'
+}
+
+Enum registration_status_enum {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
+Enum payment_status_enum {
+  UNPAID
+  PAID // marcato manualmente dall'organizzatore
+}
+
+
+// =====================================================================
+// [DOCUMENTS] Documents
+// =====================================================================
+// Metadati relazionali; i FILE veri stanno su object storage (S3-like).
+// =====================================================================
+
+Table required_documents {
+  id             uuid [pk]
+  tournament_id  uuid [not null, note: 'CROSS-CONTEXT -> tournaments.id. Il template e’ definito dall’organizzatore (US-04).']
+  name           varchar [not null]
+  description    varchar
+  level          document_level_enum [not null, note: 'Se il documento e’ richiesto a livello squadra o singolo giocatore.']
+  is_mandatory   boolean [not null, default: true]
+  has_expiry     boolean [not null, default: false, note: 'es. certificato medico.']
+
+  Note: 'TEMPLATE / regola documentale. Definisce COSA serve, non il file caricato.'
+}
+
+Enum document_level_enum {
+  TEAM
+  PLAYER
+}
+
+Table uploaded_documents {
+  id                   uuid [pk]
+  required_document_id uuid [not null, note: 'A quale requisito risponde questo file.']
+  registration_id      uuid [not null, note: 'CROSS-CONTEXT -> registrations.id. Contesto iscrizione.']
+  uploaded_by          uuid [not null, note: 'CROSS-CONTEXT -> users.id. Proprietario del documento.']
+  player_user_id       uuid [note: 'CROSS-CONTEXT -> users.id. Valorizzato se il documento e’ a livello PLAYER (di chi e’). Null se livello TEAM.']
+  file_url             varchar [not null, note: 'Puntatore a object storage (non il blob).']
+  expiry_date          date [note: 'Se il documento scade.']
+  validation_status    doc_validation_enum [not null, default: 'PENDING']
+  uploaded_at          timestamp [not null, default: `now()`]
+
+  Note: 'ISTANZA / file caricato. Visibile solo a organizzatore del torneo e proprietario del documento.'
+}
+
+Enum doc_validation_enum {
+  PENDING
+  VALIDATED
+  REJECTED
+}
+
+
+// =====================================================================
+// [SCORING] Scoring & Standings
+// =====================================================================
+
+// Un girone (per ROUND_ROBIN e per la fase a gironi del misto)
+Table groups {
+  id             uuid [pk]
+  tournament_id  uuid [not null, note: 'CROSS-CONTEXT -> tournaments.id']
+  name           varchar [not null, note: 'es. Girone A']
+
+  Note: 'Esiste solo per formati con fase a gironi.'
+}
+
+Table group_teams {
+  id        uuid [pk]
+  group_id  uuid [not null]
+  team_id   uuid [not null, note: 'CROSS-CONTEXT -> teams.id']
+
+  Indexes {
+    (group_id, team_id) [unique]
+  }
+  Note: 'Assegnazione squadre ai gironi (generata da US-10).'
+}
+
+Table matches {
+  id             uuid [pk]
+  tournament_id  uuid [not null, note: 'CROSS-CONTEXT -> tournaments.id']
+  group_id       uuid [note: 'Valorizzato se la partita e’ di girone. Null se e’ di bracket.']
+  round          int  [note: 'Turno/giornata. Per il bracket: livello (es. quarti=1...).']
+  stage          match_stage_enum [not null]
+  home_team_id   uuid [note: 'CROSS-CONTEXT -> teams.id. Null se slot non ancora determinato (bracket in attesa).']
+  away_team_id   uuid [note: 'CROSS-CONTEXT -> teams.id. Null se bye o slot non determinato.']
+  home_score     int  [note: 'Null finche’ non inserito.']
+  away_score     int
+  status         match_status_enum [not null, default: 'SCHEDULED']
+  scheduled_at   timestamp
+  // Avanzamento bracket:
+  next_match_id  uuid [note: 'Self-ref: partita a cui avanza il vincente (eliminazione diretta).']
+  next_match_slot match_slot_enum [note: 'In quale slot della next_match confluisce il vincente (HOME/AWAY). Serve per posizionare correttamente le squadre nel turno successivo, incl. finalina 3o/4o posto.']
+  played_at      timestamp
+
+  Note: 'US-11: inserimento/modifica risultato -> ricalcolo classifiche (girone) o avanzamento (bracket).'
+}
+
+Enum match_slot_enum {
+  HOME
+  AWAY
+}
+
+Enum match_stage_enum {
+  GROUP
+  KNOCKOUT
+}
+
+Enum match_status_enum {
+  SCHEDULED
+  PLAYED
+  BYE
+  CANCELLED
+}
+
+// Classifica di girone. Puo' essere una VISTA MATERIALIZZATA ricalcolata
+// a ogni risultato, oppure una tabella aggiornata dal servizio Scoring.
+Table standings {
+  id             uuid [pk]
+  group_id       uuid [not null]
+  team_id        uuid [not null, note: 'CROSS-CONTEXT -> teams.id']
+  played         int  [not null, default: 0]
+  won            int  [not null, default: 0]
+  drawn          int  [not null, default: 0]
+  lost           int  [not null, default: 0]
+  goals_for      int  [not null, default: 0]
+  goals_against  int  [not null, default: 0]
+  goal_diff      int  [not null, default: 0]
+  points         int  [not null, default: 0]
+  rank           int  [note: 'Posizione calcolata applicando i criteri di spareggio (da sport_ruleset).']
+
+  Indexes {
+    (group_id, team_id) [unique]
+  }
+  Note: 'US-12. Ordine e spareggi dipendono dal ruleset (scontro diretto, diff reti, ...). Candidata a vista materializzata.'
+}
+
+
+// =====================================================================
+// RELAZIONI
+// =====================================================================
+// --- Intra-context (FK reali) ---
+Ref: user_roles.user_id > users.id
+Ref: tournament_format_config.tournament_id > tournaments.id
+Ref: team_members.team_id > teams.id
+Ref: group_teams.group_id > groups.id
+Ref: uploaded_documents.required_document_id > required_documents.id
+Ref: matches.next_match_id > matches.id
+Ref: standings.group_id > groups.id
+
+// --- Cross-context (riferimenti LOGICI: API/eventi, non FK a runtime) ---
+Ref: tournaments.organizer_id > users.id          // TOURNAMENT -> IDENTITY
+Ref: tournaments.sport_id > sports.id             // TOURNAMENT -> SPORT (Mongo)
+Ref: sport_ruleset.tournament_id > tournaments.id // SPORT -> TOURNAMENT
+Ref: teams.created_by > users.id                  // TEAM -> IDENTITY
+Ref: team_members.user_id > users.id              // TEAM -> IDENTITY
+Ref: registrations.tournament_id > tournaments.id // REGISTRATION -> TOURNAMENT
+Ref: registrations.team_id > teams.id             // REGISTRATION -> TEAM
+Ref: required_documents.tournament_id > tournaments.id // DOCUMENTS -> TOURNAMENT
+Ref: uploaded_documents.registration_id > registrations.id // DOCUMENTS -> REGISTRATION
+Ref: uploaded_documents.uploaded_by > users.id    // DOCUMENTS -> IDENTITY
+Ref: groups.tournament_id > tournaments.id        // SCORING -> TOURNAMENT
+Ref: group_teams.team_id > teams.id               // SCORING -> TEAM
+Ref: matches.tournament_id > tournaments.id       // SCORING -> TOURNAMENT
+Ref: matches.group_id > groups.id                 // SCORING intra (group)
+Ref: matches.home_team_id > teams.id              // SCORING -> TEAM
+Ref: matches.away_team_id > teams.id              // SCORING -> TEAM
+Ref: standings.team_id > teams.id                 // SCORING -> TEAM
+
+
+// =====================================================================
+// RAGGRUPPAMENTI = BOUNDED CONTEXT / MICROSERVIZI
+// =====================================================================
+TableGroup identity_access [color: #2E86C1, note: 'Microservizio Identity & Access. DB proprio.'] {
+  users
+  user_roles
+}
+
+TableGroup tournament_management [color: #17A589, note: 'Microservizio Tournament Management. DB proprio.'] {
+  tournaments
+  tournament_format_config
+}
+
+TableGroup sport_rules [color: #884EA0, note: 'Microservizio Sport & Rules. DOCUMENTALE (MongoDB). Le tabelle qui sono collection logiche, non relazionali.'] {
+  sports
+  sport_ruleset
+}
+
+TableGroup team_roster [color: #CA6F1E, note: 'Microservizio Team & Roster. DB proprio.'] {
+  teams
+  team_members
+}
+
+TableGroup registration [color: #B7950B, note: 'Microservizio Registration. DB proprio.'] {
+  registrations
+}
+
+TableGroup documents [color: #7D6608, note: 'Microservizio Documents. Metadati su DB proprio; file su object storage.'] {
+  required_documents
+  uploaded_documents
+}
+
+TableGroup scoring_standings [color: #C0392B, note: 'Microservizio Scoring & Standings. DB proprio. Modulo algoritmico piu’ delicato (US-10, US-11).'] {
+  groups
+  group_teams
+  matches
+  standings
+}
