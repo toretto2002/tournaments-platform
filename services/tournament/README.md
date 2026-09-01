@@ -23,7 +23,6 @@ tournament/
 ├── Dockerfile
 ├── pyproject.toml
 ├── uv.lock
-├── requirements.txt
 ├── .env.example
 └── README.md
 ```
@@ -31,11 +30,9 @@ tournament/
 ## Sviluppo locale
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+uv sync
 copy .env.example .env
-uvicorn app.main:app --reload --port 8002
+uv run uvicorn app.main:app --reload --port 8002
 ```
 
 Porta di default: **8002**

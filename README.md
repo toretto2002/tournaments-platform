@@ -74,11 +74,9 @@ docker compose up -d
 
 # Lavora su un singolo servizio
 cd services/identity
-python -m venv .venv
-.venv\Scripts\Activate.ps1        # PowerShell (Windows)
-pip install -r requirements.txt
+uv sync
 copy .env.example .env             # poi valorizza le variabili
-uvicorn app.main:app --reload --port 8001
+uv run uvicorn app.main:app --reload --port 8001
 ```
 
 ## Documentazione

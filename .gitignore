@@ -35,8 +35,15 @@ coverage.xml
 !.env.example
 *.pem
 *.key
+keys/
 secrets/
 credentials.json
+
+# ===== Dipendenze generate =====
+# requirements.txt per i servizi Python e' un artefatto di build (generato
+# dal Dockerfile via `uv export` a partire da pyproject.toml + uv.lock), non
+# e' piu' versionato. Fonte di verita': pyproject.toml + uv.lock.
+requirements.txt
 
 # ===== Docker =====
 docker-compose.override.yml
